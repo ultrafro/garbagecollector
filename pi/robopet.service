@@ -1,0 +1,16 @@
+[Unit]
+Description=RoboPet LeKiwi WebSocket control bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/robopet/pi
+ExecStart=/usr/bin/python3 /home/pi/robopet/pi/lekiwi_ws.py --host 0.0.0.0 --port 8765
+Restart=on-failure
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
