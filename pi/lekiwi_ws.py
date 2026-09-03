@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import time
+from pathlib import Path
 
 import numpy as np
 import websockets
@@ -16,6 +17,7 @@ MAX_BASE = 0.12
 MAX_THETA = 12.0
 JOINT_LIMITS = {name: (-3.2, 3.2) for name in JOINTS}
 JOINT_LIMITS["gripper"] = (-1.2, 1.2)
+HOME_POSE_FILE = Path.home() / "robopet" / "home_pose.json"
 
 
 class Hardware:
@@ -73,6 +75,20 @@ class Bridge:
         self.state_data = {"status": "mock" if args.mock else "connected", "hardware": not args.mock}
         if args.mock:
             self.state_data.update(dict.fromkeys(JOINTS, 0.0))
+        self.home_pose = self.load_home_pose()
+
+    @staticmethod
+    def load_home_pose():
+        try:
+            data = json.loads(HOME_POSE_FILE.read_text())
+            return {name: float(data[name]) for name in JOINTS}
+        except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+
+    async def reply(self, message):
+        if self.clients:
+            payload = json.dumps(message)
+            await asyncio.gather(*(client.send(payload) for client in list(self.clients)), return_exceptions=True)
 
     async def send_state(self):
         if self.hw:
@@ -160,11 +176,26 @@ class Bridge:
             if self.hw:
                 await asyncio.to_thread(self.hw.drive, x, y, theta)
             self.last_command = time.monotonic()
+        elif kind == "set_home":
+            measured = await asyncio.to_thread(self.hw.state) if self.hw else self.state_data
+            self.home_pose = {name: float(measured[name]) for name in JOINTS}
+            HOME_POSE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            HOME_POSE_FILE.write_text(json.dumps(self.home_pose, indent=2) + "\n")
+            await self.reply({"type": "notice", "message": "Home pose saved from current motor positions."})
+        elif kind == "home":
+            if not self.home_pose:
+                await self.reply({"type": "error", "message": "No home pose has been saved yet."})
+                return
+            if self.hw:
+                await asyncio.to_thread(self.hw.joints, self.home_pose)
+            else:
+                self.state_data.update(self.home_pose)
+            await self.reply({"type": "notice", "message": "Moving arm to saved home pose."})
 
     async def handler(self, websocket):
         self.clients.add(websocket)
         try:
-            await websocket.send(json.dumps({"type": "hello", "joints": JOINTS, "state": self.state_data}))
+            await websocket.send(json.dumps({"type": "hello", "joints": JOINTS, "state": self.state_data, "has_home": self.home_pose is not None}))
             async for raw in websocket:
                 try:
                     async with self.lock:

@@ -6,6 +6,10 @@ The bridge controls six arm joints (`shoulder_pan`, `shoulder_lift`, `elbow_flex
 
 The same WebSocket carries JSON motor telemetry and binary MJPEG camera frames from `/dev/video0`.
 
+The UI can save the current measured arm pose as home and return to it later. The pose is persisted on the Pi at `~/robopet/home_pose.json`.
+
+On connection, the six arm sliders initialize from the measured motor positions.
+
 Arm positions are radians, matching the `rustypot` API. The UI and bridge clamp targets to conservative ranges.
 
 ## Run the local page
