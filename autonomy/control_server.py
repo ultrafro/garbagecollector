@@ -265,9 +265,10 @@ class ControlHub:
             # The camera's own auto exposure (exposure 0 on the Pi). Re-sent every 10 s so a Pi restart, which resets
             # its camera to manual defaults, is corrected; the Pi ignores a repeat of its current setting.
             if now - self.camera_sent > 10.:
-                await self.pi_send({"type": "camera_settings", "exposure": 0, "gain": 0})
+                gain = int(np.clip(self.args.camera_auto_gain, 0, 60))
+                await self.pi_send({"type": "camera_settings", "exposure": 0, "gain": gain})
                 self.camera_sent = now
-                self.camera_exposure, self.camera_gain = 0, 0
+                self.camera_exposure, self.camera_gain = 0, gain
             return
         if now - self.camera_adjusted < .30:
             return
@@ -1729,9 +1730,11 @@ def parse_args():
     parser.add_argument("--pi", default="ws://raspberrypi.local:8765")
     parser.add_argument("--model", default="yolov8s-worldv2.pt")
     parser.add_argument("--labels", default=DEFAULT_LABELS)
-    parser.add_argument("--camera-auto", action=argparse.BooleanOptionalAction, default=False,
-                        help="Use the camera's own auto exposure. Off by default: in a dim room it settled at brightness "
-                             "~8-20/255 where this server's control reached ~62")
+    parser.add_argument("--camera-auto", action=argparse.BooleanOptionalAction, default=True,
+                        help="Use the camera's own auto exposure (default). In a dim room it settled at brightness "
+                             "~8-20/255 where --no-camera-auto (server-side control) reached ~62")
+    parser.add_argument("--camera-auto-gain", type=int, default=0,
+                        help="Gain (0-60) used with the camera's auto exposure; its auto mode does not raise gain itself")
     parser.add_argument("--targeter", choices=("yolo", "vlm"), default="yolo",
                         help="vlm: Qwen3-VL finds/verifies trash, CSRT tracks between answers")
     parser.add_argument("--vlm-backend", choices=("llama", "hf"), default="llama",
