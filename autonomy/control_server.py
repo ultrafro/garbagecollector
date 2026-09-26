@@ -859,16 +859,22 @@ class ControlHub:
                 # backwards to a lagging measured joint at every packet.
                 ik_seed = dive.copy()
                 ik_seed['gripper'] = dive['gripper']
-                try:
-                    next_pose = self.wrist_ik.solve_position(ik_seed, target,
+                def solve(elevation_weight):
+                    return self.wrist_ik.solve_position(ik_seed, target,
                         position_tolerance=.0005, orient_weight=.01,
                         orientation=self.wrist_ik.fk(dive)[:3, :3],
-                        elevation=float(ray[2] / np.linalg.norm(ray)), elevation_weight=self.args.grab_elevation_weight)
+                        elevation=float(ray[2] / np.linalg.norm(ray)), elevation_weight=elevation_weight)
+                try:
+                    try:
+                        next_pose = solve(self.args.grab_elevation_weight)
+                    except ValueError:
+                        # Some poses cannot also pitch the camera to the path: keep going on position alone.
+                        next_pose = solve(0.)
                 except ValueError as exc:
                     stop_reason = f"IK could not continue after {progress*1000:.0f} mm: {exc}"
                     self.grab_debug['dive_stop_reason'] = stop_reason
-                    await self.grab_notice(f"Grab stopped: {stop_reason}. No grip or put-away will run.", error=True)
-                    return
+                    await self.grab_notice(f"Grab stopped: {stop_reason}. No grip; treating it as a miss.", error=True)
+                    return "missed"                          # the retry loop backs up and approaches again
                 # IK can distribute a small Cartesian step into a large jump
                 # on one servo near a kinematic boundary. Slew-limit every
                 # joint so the wrist moves continuously and the camera keeps
@@ -1834,7 +1840,8 @@ def parse_args():
     parser.add_argument("--grab-lift-wrist", type=float, default=-.02)
     parser.add_argument("--grab-gripper", type=float, default=-1.2, help="Gripper close endpoint; -1.2 is the fully-closed limit of the Pi gripper clamp, so it clamps hard on whatever it reached")
     parser.add_argument("--grab-open", type=float, default=1.2, help="Configured open endpoint within Pi gripper clamp; not an uncalibrated mechanical-limit seek")
-    parser.add_argument("--grab-pan-sign", type=float, choices=(-1., 1.), default=-1.)
+    parser.add_argument("--grab-pan-sign", type=float, choices=(-1., 1.), default=1.,
+                        help="Image-x to dive-yaw sign; the dive's self-check flipped -1 in every dive on 2026-09-26")
     parser.add_argument("--grab-max-travel", type=float, default=.25,
                         help="Maximum dive travel in metres; reaching it closes the gripper rather than failing")
     parser.add_argument("--grab-approach-step", type=float, default=.0015,
