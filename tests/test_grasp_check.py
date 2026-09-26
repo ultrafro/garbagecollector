@@ -19,7 +19,7 @@ def _check(half_box, top_box, held_answer, bottom_answer, tmp_path, grip=-.8):
     hub.state_seen = time.monotonic()
     hub.motion_dir = Path(tmp_path) / 'motions'
     hub.args = SimpleNamespace(grab_verify_height=.12, grab_lift_speed=10., grasp_parallax_min=.6,
-                               grasp_empty_gripper=-.8, grasp_gripper_margin=.25)
+                               grasp_empty_gripper=-.8, grasp_gripper_margin=.08)
     hub.grip_reading = (grip, 50.)
     frame = cv2.imencode('.jpg', np.zeros((360, 640, 3), np.uint8))[1].tobytes()
     boxes = iter([half_box, top_box])
@@ -76,3 +76,8 @@ def test_jaws_held_open_count_as_held_even_if_the_camera_sees_nothing(tmp_path):
 def test_normal_close_leaves_the_decision_to_the_camera(tmp_path):
     held, message = _check([200, 100, 440, 300], [290, 150, 350, 210], 'EMPTY', 'NO', tmp_path, grip=-.79)
     assert held is False and 'gripper=-' in message
+
+
+def test_slightly_open_jaws_from_wrapper_film_count_as_held(tmp_path):
+    held, _ = _check(None, None, 'EMPTY', 'NO', tmp_path, grip=-.69)          # seen on real wrapper grasps
+    assert held is True

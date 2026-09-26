@@ -1062,8 +1062,8 @@ class ControlHub:
         held = bool(cast) and sum(cast) * 2 > len(cast)
         if cast and sum(cast) * 2 == len(cast):            # a tie: parallax is the most direct evidence
             held = bool(parallax) if parallax is not None else False
-        # Physical evidence the camera may not see (a lemon hangs below the frame): jaws stopped well short of an
-        # empty close mean something is between them. A normal close says nothing (thin wrappers close fully too).
+        # A grasp counts if the camera confirms it OR the jaws did not fully close: something between them (e.g. a
+        # lemon hanging below the frame) is physical evidence. A full close casts no vote; the camera decides then.
         grip_position, grip_load = self.grip_reading
         jaws_held = grip_position >= self.args.grasp_empty_gripper + self.args.grasp_gripper_margin
         votes['gripper'] = True if jaws_held else None
@@ -1763,8 +1763,9 @@ def parse_args():
                         help="Average m/s for the smooth lift to the grasp-check height")
     parser.add_argument("--grasp-empty-gripper", type=float, default=-.80,
                         help="Gripper position (rad) where an empty close stops (measured -0.78 to -0.81)")
-    parser.add_argument("--grasp-gripper-margin", type=float, default=.25,
-                        help="Jaws stopping this much more open than an empty close count as holding something")
+    parser.add_argument("--grasp-gripper-margin", type=float, default=.08,
+                        help="Jaws stopping this much more open than an empty close count as holding something "
+                             "(empty closes stop within about 0.03 rad of each other)")
     parser.add_argument("--grasp-parallax-min", type=float, default=.6,
                         help="Top/half-height box area ratio at or above which the trash rose with the gripper (held)")
     parser.add_argument("--grab-verify-height", type=float, default=.12,
