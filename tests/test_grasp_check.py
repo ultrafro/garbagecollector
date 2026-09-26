@@ -12,13 +12,15 @@ from autonomy.wrist_ik import WristIK
 GRIP = {'shoulder_pan': 0., 'shoulder_lift': .3, 'elbow_flex': 1.0, 'wrist_flex': -.45, 'wrist_roll': 0., 'gripper': -.8}
 
 
-def _check(half_box, top_box, held_answer, bottom_answer, tmp_path):
+def _check(half_box, top_box, held_answer, bottom_answer, tmp_path, grip=-.8):
     hub = ControlHub.__new__(ControlHub)
     hub.wrist_ik = WristIK()
     hub.state = dict(GRIP, status='connected')
     hub.state_seen = time.monotonic()
     hub.motion_dir = Path(tmp_path) / 'motions'
-    hub.args = SimpleNamespace(grab_verify_height=.12, grab_lift_speed=10., grasp_parallax_min=.6)
+    hub.args = SimpleNamespace(grab_verify_height=.12, grab_lift_speed=10., grasp_parallax_min=.6,
+                               grasp_empty_gripper=-.8, grasp_gripper_margin=.25)
+    hub.grip_reading = (grip, 50.)
     frame = cv2.imencode('.jpg', np.zeros((360, 640, 3), np.uint8))[1].tobytes()
     boxes = iter([half_box, top_box])
     notices = []
@@ -64,3 +66,13 @@ def test_snapshots_saved_for_labelling(tmp_path):
     _check([200, 250, 440, 360], [210, 240, 450, 360], 'HELD', 'YES', tmp_path)
     saved = list((Path(tmp_path) / 'grasp-checks').glob('*/check.json'))
     assert saved and (saved[0].parent / 'top.jpg').exists()
+
+
+def test_jaws_held_open_count_as_held_even_if_the_camera_sees_nothing(tmp_path):
+    held, message = _check(None, None, 'EMPTY', 'NO', tmp_path, grip=-.2)     # e.g. a lemon below the frame
+    assert held is True and 'gripper=held' in message and 'gripper stopped at -0.20' in message
+
+
+def test_normal_close_leaves_the_decision_to_the_camera(tmp_path):
+    held, message = _check([200, 100, 440, 300], [290, 150, 350, 210], 'EMPTY', 'NO', tmp_path, grip=-.79)
+    assert held is False and 'gripper=-' in message

@@ -34,6 +34,7 @@ class ControlHub:
     search_tick = None
     logged_reason = None
     auto_cmd = None                  # last arm pose auto commanded (rate-limited toward the target pose)
+    grip_reading = (-1.2, None)      # gripper (position, load) measured once the close settled
     dive_image_error = (None, None)  # target offset from image centre at the last dive correction
     grab_task = None
 
@@ -923,6 +924,9 @@ class ControlHub:
             closed["gripper"] = self.args.grab_gripper
             grip_s, _ = await self._settle(closed, "grip", lambda m: {'gripper': m['gripper']},
                                            minimum=self.args.grab_grip_time)
+            load = self.state.get('servo_load') or []
+            self.grip_reading = (float(self.state.get('gripper', closed['gripper'])),
+                                 float(load[JOINTS.index('gripper')]) if len(load) > JOINTS.index('gripper') else None)
             await asyncio.sleep(self.args.grab_hold_time)
             await self.grab_notice(f"Grab: arm settled at the bottom in {settle_s:.2f}s "
                                    f"({settle_error*1000:.0f} mm from the dive target); gripper closed in {grip_s:.2f}s "
@@ -1058,10 +1062,19 @@ class ControlHub:
         held = bool(cast) and sum(cast) * 2 > len(cast)
         if cast and sum(cast) * 2 == len(cast):            # a tie: parallax is the most direct evidence
             held = bool(parallax) if parallax is not None else False
+        # Physical evidence the camera may not see (a lemon hangs below the frame): jaws stopped well short of an
+        # empty close mean something is between them. A normal close says nothing (thin wrappers close fully too).
+        grip_position, grip_load = self.grip_reading
+        jaws_held = grip_position >= self.args.grasp_empty_gripper + self.args.grasp_gripper_margin
+        votes['gripper'] = True if jaws_held else None
+        if jaws_held:
+            held = True
         height = self.wrist_ik.fk(self._measured_arm_pose(lift))[2, 3] * 1000
         shown = ', '.join(f"{k}={'-' if v is None else 'held' if v else 'empty'}" for k, v in votes.items())
         await self.grab_notice(f"Grasp check at {height:.0f} mm: {'HELD' if held else 'MISSED'} ({shown}"
-                               + (f"; box size ratio {ratio:.2f}" if ratio is not None else "") + ").")
+                               + (f"; box size ratio {ratio:.2f}" if ratio is not None else "")
+                               + f"; gripper stopped at {grip_position:+.2f}"
+                               + (f", load {grip_load:.0f}" if grip_load is not None else "") + ").")
         try:
             folder = self.motion_dir.parent / "grasp-checks" / time.strftime("%Y%m%d-%H%M%S")
             folder.mkdir(parents=True, exist_ok=True)
@@ -1070,7 +1083,8 @@ class ControlHub:
             (folder / "check.json").write_text(json.dumps({
                 "held": held, "votes": votes, "box_ratio": ratio, "half_box": low_box, "top_box": high_box,
                 "answers": {"held_or_empty": held_answer[0], "bottom_strip": bottom_answer[0]},
-                "height_mm": round(height), "actual_outcome": None}, indent=1))
+                "height_mm": round(height), "gripper_position": grip_position, "gripper_load": grip_load,
+                "actual_outcome": None}, indent=1))
         except OSError:
             logging.exception("could not save grasp check snapshots")
         return held
@@ -1747,6 +1761,10 @@ def parse_args():
     parser.add_argument("--camera-vfov", type=float, default=60., help="Wrist camera vertical field of view (deg)")
     parser.add_argument("--grab-lift-speed", type=float, default=.06,
                         help="Average m/s for the smooth lift to the grasp-check height")
+    parser.add_argument("--grasp-empty-gripper", type=float, default=-.80,
+                        help="Gripper position (rad) where an empty close stops (measured -0.78 to -0.81)")
+    parser.add_argument("--grasp-gripper-margin", type=float, default=.25,
+                        help="Jaws stopping this much more open than an empty close count as holding something")
     parser.add_argument("--grasp-parallax-min", type=float, default=.6,
                         help="Top/half-height box area ratio at or above which the trash rose with the gripper (held)")
     parser.add_argument("--grab-verify-height", type=float, default=.12,
