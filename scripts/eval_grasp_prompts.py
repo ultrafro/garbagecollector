@@ -38,6 +38,11 @@ def crop_box(image, box, pad=.15):
     return image[int(max(0, y1-pad*bh)):int(min(h, y2+pad*bh)), int(max(0, x1-pad*bw)):int(min(w, x2+pad*bw))]
 
 
+def bottom_strip(image, fraction):
+    h = image.shape[0]
+    return image[int(h*(1-fraction)):, :]
+
+
 def strategies(loc):
     """Each returns True (held), False (empty) or None (unparseable), given (before, after, before_box)."""
     return {
@@ -62,6 +67,16 @@ def strategies(loc):
             CAMERA + 'The gripper just closed on a piece of trash and lifted. In one sentence, describe what is between the jaws and '
             'what is on the floor. Then on a new line write HELD if the trash is in the gripper, or EMPTY if it was left behind.', 70)[0],
             'HELD', 'EMPTY'),
+        'bottom30_anything': lambda b, a, box: word(loc.ask([bottom_strip(a, .3)],
+            'This is the bottom strip of a photo from a camera on a robot gripper. Is there any object (plastic, wrapper, '
+            'paper, peel, film) in this strip, close to the camera, rather than only floor or rug? Answer YES or NO.', 8)[0], 'YES', 'NO'),
+        'bottom45_anything': lambda b, a, box: word(loc.ask([bottom_strip(a, .45)],
+            'This is the bottom part of a photo from a camera on a robot gripper. Is there any object (plastic, wrapper, '
+            'paper, peel, film) in it, close to the camera, rather than only floor or rug? Answer YES or NO.', 8)[0], 'YES', 'NO'),
+        'full_bottom_edge': lambda b, a, box: word(loc.ask([a],
+            CAMERA + 'The gripper just closed and lifted. Is there an object sticking into the image from the bottom edge, '
+            'very close to the camera and held by the gripper (not lying on the floor further away)? Answer YES or NO.', 8)[0],
+            'YES', 'NO'),
         'box_held_object': lambda b, a, box: (lambda r: None if r['parse_error'] else bool(r['boxes']))(parse_boxes(loc.ask([a],
             CAMERA + 'Box any object that is held between the gripper jaws (moving with the gripper). Ignore everything lying on the floor. '
             'Answer with only a JSON list [[x1,y1,x2,y2],...] normalized to 0-1000, or [] if the gripper holds nothing.', 60)[0],

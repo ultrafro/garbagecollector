@@ -63,6 +63,16 @@ def crop_box(image, box, pad=.1):
     bw, bh = x2-x1, y2-y1
     return image[int(max(0, y1-pad*bh)):int(min(h, y2+pad*bh)), int(max(0, x1-pad*bw)):int(min(w, x2+pad*bw))]
 
+# Grasp check, bottom of the frame: at the check height the camera often points past the jaws, so a held object
+# only shows as something poking in at the bottom edge, close to the camera.
+BOTTOM_PROMPT = ('This is the bottom strip of a photo from a camera mounted on a robot gripper. Is there any object '
+                 '(plastic, wrapper, paper, peel, film) in this strip, close to the camera, rather than only floor or rug? '
+                 'Answer YES or NO.')
+
+
+def bottom_strip(image, fraction=.35):
+    return image[int(image.shape[0]*(1-fraction)):, :]
+
 
 def grasp_answer(answer, held_word, empty_word):
     """True/False from the last keyword in the answer, None if neither appears."""
