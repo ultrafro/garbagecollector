@@ -999,17 +999,15 @@ class ControlHub:
         return cv2.imdecode(np.frombuffer(self.latest_jpeg[1], np.uint8), cv2.IMREAD_COLOR)
 
     async def _verify_grasp(self, closed):
-        """Lift straight up and decide whether the gripper holds the trash, by majority of three votes:
+        """Lift straight up and decide whether the gripper holds something.
 
-        - parallax: the trash box at half height vs. the top. Held trash rises with the camera and keeps its size;
-          trash left on the floor shrinks sharply (the camera's height above it roughly doubles) or leaves view.
-        - bottom strip: "is there an object at the bottom of the image, close to the camera?" (the jaws are often
-          out of view at this camera angle, so a held object only pokes in from the bottom edge).
-        - held_or_empty: the original whole-frame question.
-        Snapshots and votes are saved under recordings/grasp-checks/ for labelling.
+        Held if ANY of: the jaws did not fully close (physical evidence, e.g. a lemon below the frame), or either VLM
+        question on the lifted view says held ("held or empty?" and "anything very close to the camera?").
+        Missing a real grasp throws away trash, so one confident "held" is enough. The snapshot and votes are saved
+        under recordings/grasp-checks/ for labelling.
         Returns True/False, or None when the check could not run (the caller then proceeds unverified).
         """
-        from autonomy.vlm_targeting import BOTTOM_PROMPT, GRASP_PROMPT, bottom_strip, grasp_answer
+        from autonomy.vlm_targeting import GRASP_PROMPT, NEAR_PROMPT, grasp_answer
         start = self.wrist_ik.fk(self._measured_arm_pose(closed))
         lift = self._measured_arm_pose(closed)
         lift['gripper'] = closed['gripper']
@@ -1022,71 +1020,38 @@ class ControlHub:
                 break
             lift['gripper'] = closed['gripper']
             path.append(dict(lift))
-        half = len(path) // 2
-        seconds_per_step = .005 / self.args.grab_lift_speed
-        still = lambda m: {n: m[n] for n in JOINTS if n != 'gripper'}
-        await self._stream_path(path[:half + 1], half * seconds_per_step, "verify-lift")
-        await self._settle(path[half], "verify-lift", still, timeout=1.)
-        low_image = await self._fresh_frame()
-        await self._stream_path(path[half:], (len(path) - 1 - half) * seconds_per_step, "verify-lift")
-        await self._settle(lift, "verify-lift", still, timeout=1.5)
+        await self._stream_path(path, (len(path) - 1) * .005 / self.args.grab_lift_speed, "verify-lift")
+        await self._settle(lift, "verify-lift", lambda m: {n: m[n] for n in JOINTS if n != 'gripper'}, timeout=1.5)
         image = await self._fresh_frame()
-        if image is None or low_image is None:
+        if image is None:
             await self.grab_notice("Grasp check: no fresh camera frame; continuing unverified.", error=True)
             return None
-
-        def largest_box(frame):
-            boxes = self.vlm_client.locate(frame)['boxes']
-            return max((b['box'] for b in boxes), key=lambda b: (b[2]-b[0])*(b[3]-b[1]), default=None)
-
         try:
-            low_box, high_box, held_answer, bottom_answer = await asyncio.gather(
-                asyncio.to_thread(largest_box, low_image), asyncio.to_thread(largest_box, image),
+            held_answer, near_answer = await asyncio.gather(
                 asyncio.to_thread(self.vlm_client.ask, [image], GRASP_PROMPT, 8),
-                asyncio.to_thread(self.vlm_client.ask, [bottom_strip(image)], BOTTOM_PROMPT, 8))
+                asyncio.to_thread(self.vlm_client.ask, [image], NEAR_PROMPT, 8))
         except Exception as exc:
             await self.grab_notice(f"Grasp check unavailable ({type(exc).__name__}); continuing unverified.", error=True)
             return None
-        area = lambda b: (b[2]-b[0])*(b[3]-b[1]) if b else 0.
-        ratio = area(high_box) / area(low_box) if low_box and high_box else None
-        if low_box and not high_box:
-            parallax = False                               # it was there lower down and did not come up with us
-        elif ratio is None:
-            parallax = None                                # nothing seen at half height: no evidence either way
-        else:
-            parallax = ratio >= self.args.grasp_parallax_min
-        votes = {'parallax': parallax,
-                 'bottom_strip': grasp_answer(bottom_answer[0], 'YES', 'NO'),
-                 'held_or_empty': grasp_answer(held_answer[0], 'HELD', 'EMPTY')}
-        cast = [v for v in votes.values() if v is not None]
-        held = bool(cast) and sum(cast) * 2 > len(cast)
-        if cast and sum(cast) * 2 == len(cast):            # a tie: parallax is the most direct evidence
-            held = bool(parallax) if parallax is not None else False
-        # A grasp counts if the camera confirms it OR the jaws did not fully close: something between them (e.g. a
-        # lemon hanging below the frame) is physical evidence. A full close casts no vote; the camera decides then.
         grip_position, grip_load = self.grip_reading
-        jaws_held = grip_position >= self.args.grasp_empty_gripper + self.args.grasp_gripper_margin
-        votes['gripper'] = True if jaws_held else None
-        if jaws_held:
-            held = True
+        votes = {'gripper': True if grip_position >= self.args.grasp_empty_gripper + self.args.grasp_gripper_margin else None,
+                 'held_or_empty': grasp_answer(held_answer[0], 'HELD', 'EMPTY'),
+                 'near_camera': grasp_answer(near_answer[0], 'YES', 'NO')}
+        held = any(v is True for v in votes.values())
         height = self.wrist_ik.fk(self._measured_arm_pose(lift))[2, 3] * 1000
         shown = ', '.join(f"{k}={'-' if v is None else 'held' if v else 'empty'}" for k, v in votes.items())
-        await self.grab_notice(f"Grasp check at {height:.0f} mm: {'HELD' if held else 'MISSED'} ({shown}"
-                               + (f"; box size ratio {ratio:.2f}" if ratio is not None else "")
-                               + f"; gripper stopped at {grip_position:+.2f}"
-                               + (f", load {grip_load:.0f}" if grip_load is not None else "") + ").")
+        await self.grab_notice(f"Grasp check at {height:.0f} mm: {'HELD' if held else 'MISSED'} ({shown}; gripper stopped "
+                               f"at {grip_position:+.2f}" + (f", load {grip_load:.0f}" if grip_load is not None else "") + ").")
         try:
             folder = self.motion_dir.parent / "grasp-checks" / time.strftime("%Y%m%d-%H%M%S")
             folder.mkdir(parents=True, exist_ok=True)
-            cv2.imwrite(str(folder / "half.jpg"), low_image)
             cv2.imwrite(str(folder / "top.jpg"), image)
             (folder / "check.json").write_text(json.dumps({
-                "held": held, "votes": votes, "box_ratio": ratio, "half_box": low_box, "top_box": high_box,
-                "answers": {"held_or_empty": held_answer[0], "bottom_strip": bottom_answer[0]},
+                "held": held, "votes": votes, "answers": {"held_or_empty": held_answer[0], "near_camera": near_answer[0]},
                 "height_mm": round(height), "gripper_position": grip_position, "gripper_load": grip_load,
                 "actual_outcome": None}, indent=1))
         except OSError:
-            logging.exception("could not save grasp check snapshots")
+            logging.exception("could not save grasp check snapshot")
         return held
 
     async def _stream_path(self, path, duration, phase):
@@ -1766,8 +1731,6 @@ def parse_args():
     parser.add_argument("--grasp-gripper-margin", type=float, default=.08,
                         help="Jaws stopping this much more open than an empty close count as holding something "
                              "(empty closes stop within about 0.03 rad of each other)")
-    parser.add_argument("--grasp-parallax-min", type=float, default=.6,
-                        help="Top/half-height box area ratio at or above which the trash rose with the gripper (held)")
     parser.add_argument("--grab-verify-height", type=float, default=.12,
                         help="Gripper height above the floor plane (m) for the grasp check")
     parser.add_argument("--grab-retry-backup", type=float, default=.08, help="Metres to back up before re-approaching")
