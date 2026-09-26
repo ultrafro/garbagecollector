@@ -35,6 +35,7 @@ class ControlHub:
     logged_reason = None
     auto_cmd = None                  # last arm pose auto commanded (rate-limited toward the target pose)
     grip_reading = (-1.2, None)      # gripper (position, load) measured once the close settled
+    camera_sent = 0.                 # last time the camera mode was sent to the Pi (auto exposure)
     dive_image_error = (None, None)  # target offset from image centre at the last dive correction
     grab_task = None
 
@@ -260,6 +261,14 @@ class ControlHub:
 
     async def adjust_camera(self, jpeg):
         now = time.monotonic()
+        if getattr(getattr(self, "args", None), "camera_auto", False):
+            # The camera's own auto exposure (exposure 0 on the Pi). Re-sent every 10 s so a Pi restart, which resets
+            # its camera to manual defaults, is corrected; the Pi ignores a repeat of its current setting.
+            if now - self.camera_sent > 10.:
+                await self.pi_send({"type": "camera_settings", "exposure": 0, "gain": 0})
+                self.camera_sent = now
+                self.camera_exposure, self.camera_gain = 0, 0
+            return
         if now - self.camera_adjusted < .30:
             return
         frame = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_GRAYSCALE)
@@ -285,6 +294,8 @@ class ControlHub:
         # capture -- the camera "keeps stopping".
         if (exposure, gain) != (self.camera_exposure, self.camera_gain):
             await self.pi_send({"type": "camera_settings", "exposure": exposure, "gain": gain})
+            logging.info("camera: exposure %s -> %s, gain %s -> %s (brightness %.0f)",
+                         self.camera_exposure, exposure, self.camera_gain, gain, level)
             self.camera_exposure, self.camera_gain = exposure, gain
         self.camera_adjusted = now
         if (exposure, gain) != (30, 0):
@@ -566,6 +577,7 @@ class ControlHub:
                                    "placement_keypoints": self.placement_keypoints,
                                    "contact_threshold": self.contact_threshold,
                                    "frame_lag_ms": self.frame_lag_ms,
+                                   "camera_exposure": self.camera_exposure, "camera_gain": self.camera_gain,
                                    "frames_dropped": self.frames_dropped,
                                    "confirm_frames": self.args.confirm_frames,
                                    "targeter": self.args.targeter,
@@ -1709,6 +1721,8 @@ def parse_args():
     parser.add_argument("--pi", default="ws://raspberrypi.local:8765")
     parser.add_argument("--model", default="yolov8s-worldv2.pt")
     parser.add_argument("--labels", default=DEFAULT_LABELS)
+    parser.add_argument("--camera-auto", action=argparse.BooleanOptionalAction, default=True,
+                        help="Use the camera's own auto exposure (default); --no-camera-auto adjusts it from here")
     parser.add_argument("--targeter", choices=("yolo", "vlm"), default="yolo",
                         help="vlm: Qwen3-VL finds/verifies trash, CSRT tracks between answers")
     parser.add_argument("--vlm-backend", choices=("llama", "hf"), default="llama",
@@ -1746,7 +1760,7 @@ def parse_args():
     parser.add_argument("--stall-turn-deg", type=float, default=45., help="Degrees to turn away after a stall")
     parser.add_argument("--overfill-backup-speed", type=float, default=.03,
                         help="m/s to creep backwards while the target fills the view")
-    parser.add_argument("--place-backup", type=float, default=.10,
+    parser.add_argument("--place-backup", type=float, default=.25,
                         help="Metres to back up after an auto grab places trash, before auto resumes")
     parser.add_argument("--wander-after-deg", type=float, default=360.,
                         help="Search rotation without a target before driving somewhere else (0 disables)")

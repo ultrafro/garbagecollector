@@ -248,8 +248,8 @@ class Bridge:
         elif kind == "camera_settings":
             exposure = int(data.get("exposure", 30))
             gain = int(data.get("gain", 0))
-            if not 1 <= exposure <= 300 or not 0 <= gain <= 60:
-                raise ValueError("Camera settings outside bounded range")
+            if not (exposure == 0 or 1 <= exposure <= 300) or not 0 <= gain <= 60:
+                raise ValueError("Camera settings outside bounded range")   # exposure 0 = the camera's auto exposure
             if (exposure, gain) == (self.args.camera_exposure, self.args.camera_gain):
                 return
             self.args.camera_exposure = exposure
