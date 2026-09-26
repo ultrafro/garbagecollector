@@ -157,7 +157,10 @@ class Bridge:
     async def configure_camera(self):
         # UVC exposure controls can reset when the stream is opened. Apply
         # after the first frame, and reapply periodically while streaming.
-        settings = (f"gain={self.args.camera_gain},backlight_compensation=0,exposure_dynamic_framerate=0", "auto_exposure=3") if self.args.camera_exposure == 0 else (
+        # In auto mode backlight_compensation sets the brightness auto exposure aims for: at 0 this camera
+        # (Innomaker U20CAM) settled at ~11/255 in a dim room, at 80 at ~115.
+        settings = (f"gain={self.args.camera_gain},backlight_compensation={self.args.camera_backlight},"
+                    "exposure_dynamic_framerate=0", "auto_exposure=3") if self.args.camera_exposure == 0 else (
             "auto_exposure=1", f"exposure_time_absolute={self.args.camera_exposure},gain={self.args.camera_gain},backlight_compensation=0,exposure_dynamic_framerate=0")
         for setting in settings:
             process = await asyncio.create_subprocess_exec(
@@ -248,12 +251,14 @@ class Bridge:
         elif kind == "camera_settings":
             exposure = int(data.get("exposure", 30))
             gain = int(data.get("gain", 0))
-            if not (exposure == 0 or 1 <= exposure <= 300) or not 0 <= gain <= 60:
+            backlight = int(data.get("backlight", self.args.camera_backlight))
+            if not (exposure == 0 or 1 <= exposure <= 300) or not 0 <= gain <= 60 or not 0 <= backlight <= 160:
                 raise ValueError("Camera settings outside bounded range")   # exposure 0 = the camera's auto exposure
-            if (exposure, gain) == (self.args.camera_exposure, self.args.camera_gain):
+            if (exposure, gain, backlight) == (self.args.camera_exposure, self.args.camera_gain, self.args.camera_backlight):
                 return
             self.args.camera_exposure = exposure
             self.args.camera_gain = gain
+            self.args.camera_backlight = backlight
             await self.reapply_camera()
         elif kind == "stop":
             if self.hw:
@@ -331,6 +336,7 @@ if __name__ == "__main__":
     parser.add_argument("--camera-device", default="/dev/video0")
     parser.add_argument("--camera-exposure", type=int, default=30, help="Initial manual exposure; controlling server adjusts from live image brightness")
     parser.add_argument("--camera-gain", type=int, default=0, help="Initial UVC gain; server controls bounded adjustments")
+    parser.add_argument("--camera-backlight", type=int, default=80, help="Auto-exposure brightness target (UVC backlight_compensation, 0-160)")
     parser.add_argument("--camera-size", default="640x360")
     parser.add_argument("--camera-divisor", type=int, default=4, help="Send every Nth native camera frame")
     parser.add_argument("--mock", action="store_true")

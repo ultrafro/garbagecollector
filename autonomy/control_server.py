@@ -266,7 +266,8 @@ class ControlHub:
             # its camera to manual defaults, is corrected; the Pi ignores a repeat of its current setting.
             if now - self.camera_sent > 10.:
                 gain = int(np.clip(self.args.camera_auto_gain, 0, 60))
-                await self.pi_send({"type": "camera_settings", "exposure": 0, "gain": gain})
+                await self.pi_send({"type": "camera_settings", "exposure": 0, "gain": gain,
+                                    "backlight": int(np.clip(self.args.camera_backlight, 0, 160))})
                 self.camera_sent = now
                 self.camera_exposure, self.camera_gain = 0, gain
             return
@@ -1733,6 +1734,9 @@ def parse_args():
     parser.add_argument("--camera-auto", action=argparse.BooleanOptionalAction, default=True,
                         help="Use the camera's own auto exposure (default). In a dim room it settled at brightness "
                              "~8-20/255 where --no-camera-auto (server-side control) reached ~62")
+    parser.add_argument("--camera-backlight", type=int, default=80,
+                        help="Camera auto-exposure brightness target (UVC backlight_compensation, 0-160; 0 was ~11/255 "
+                             "in a dim room, 80 ~115)")
     parser.add_argument("--camera-auto-gain", type=int, default=0,
                         help="Gain (0-60) used with the camera's auto exposure; its auto mode does not raise gain itself")
     parser.add_argument("--targeter", choices=("yolo", "vlm"), default="yolo",
