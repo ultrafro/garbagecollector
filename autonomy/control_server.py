@@ -297,6 +297,14 @@ class ControlHub:
             logging.info("camera: exposure %s -> %s, gain %s -> %s (brightness %.0f)",
                          self.camera_exposure, exposure, self.camera_gain, gain, level)
             self.camera_exposure, self.camera_gain = exposure, gain
+            self.camera_sent = now
+        elif not self.camera_sent:
+            self.camera_sent = now
+        elif now - self.camera_sent > 10.:
+            # Unchanged here, but the Pi may have reset (a restart puts its camera back to 30/0 while this side still
+            # believes it is at its limit, which left the feed dark). The Pi ignores a repeat of its current setting.
+            await self.pi_send({"type": "camera_settings", "exposure": exposure, "gain": gain})
+            self.camera_sent = now
         self.camera_adjusted = now
         if (exposure, gain) != (30, 0):
             logging.debug("Camera exposure=%s gain=%s brightness=%.0f clipped=%.1f%%", exposure, gain, level, clipped*100)
@@ -1721,8 +1729,9 @@ def parse_args():
     parser.add_argument("--pi", default="ws://raspberrypi.local:8765")
     parser.add_argument("--model", default="yolov8s-worldv2.pt")
     parser.add_argument("--labels", default=DEFAULT_LABELS)
-    parser.add_argument("--camera-auto", action=argparse.BooleanOptionalAction, default=True,
-                        help="Use the camera's own auto exposure (default); --no-camera-auto adjusts it from here")
+    parser.add_argument("--camera-auto", action=argparse.BooleanOptionalAction, default=False,
+                        help="Use the camera's own auto exposure. Off by default: in a dim room it settled at brightness "
+                             "~8-20/255 where this server's control reached ~62")
     parser.add_argument("--targeter", choices=("yolo", "vlm"), default="yolo",
                         help="vlm: Qwen3-VL finds/verifies trash, CSRT tracks between answers")
     parser.add_argument("--vlm-backend", choices=("llama", "hf"), default="llama",

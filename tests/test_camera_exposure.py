@@ -63,3 +63,21 @@ def test_settings_are_only_sent_when_they_change():
     hub.camera_adjusted = 0.
     asyncio.run(hub.adjust_camera(dark))
     assert len(sent) == 1 and sent[0]['type'] == 'camera_settings'
+
+
+def test_unchanged_settings_are_resent_every_10_s_in_case_the_pi_reset():
+    hub = ControlHub.__new__(ControlHub)
+    hub.camera_exposure, hub.camera_gain, hub.camera_adjusted = 300, 60, 0.
+    sent = []
+    async def send(message):
+        sent.append(message)
+    hub.pi_send = send
+    _, jpeg = cv2.imencode('.jpg', np.full((100, 100), 20, np.uint8))    # dark, but already at the limit
+    async def run():
+        await hub.adjust_camera(jpeg.tobytes())
+        assert sent == []                                              # nothing new to say yet
+        hub.camera_sent -= 11.
+        hub.camera_adjusted = 0.
+        await hub.adjust_camera(jpeg.tobytes())
+    asyncio.run(run())
+    assert sent == [{'type': 'camera_settings', 'exposure': 300, 'gain': 60}]
