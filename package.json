@@ -1,0 +1,17 @@
+{
+  "name": "robopet-tests",
+  "private": true,
+  "scripts": {
+    "build:viewer": "esbuild web/viewer.js --bundle --format=iife --outfile=web/viewer.bundle.js && esbuild web/diagnostics-viewer.js --bundle --format=iife --outfile=web/diagnostics-viewer.bundle.js",
+    "test:ui": "playwright test --reporter=line --workers=1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "esbuild": "^0.28.2",
+    "three": "^0.182.0",
+    "urdf-loader": "^0.12.6"
+  },
+  "overrides": {
+    "ws": ">=8.21.0"
+  }
+}

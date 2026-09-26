@@ -1,3 +1,20 @@
 __pycache__/
 *.py[cod]
 .DS_Store
+node_modules/
+test-results/
+playwright-report/
+*.pt
+.venv-targeting/
+mobileclip2_b.ts
+logs/
+# runtime logs
+*.err
+*.log
+*.err.prev
+*.log.prev
+# recordings and videos are large; keep only the robot's taught data
+recordings/*
+!recordings/placement-keypoints.json
+!recordings/motions/
+screenshots/
