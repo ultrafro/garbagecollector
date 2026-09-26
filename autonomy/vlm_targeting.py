@@ -17,11 +17,14 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
+# Detection prompt: small litter on the floor, with concrete examples plus a catch-all (fully general wordings fired on
+# every cluttered scene; examples alone missed a whole lemon in 9/10 frames). The trash/keep check is the backstop.
 # Detection prompt: focused on small litter on the floor. Compared offline against the earlier generic
 # "discarded packaging or litter" prompt: same wrapper recall (11/11, and every sweep frame), but silent on a
 # cluttered scene with a cracker box and shelf items (10/10 frames vs 0/10).
 PROMPT = ('Find small pieces of litter lying on the floor that someone would pick up and throw away '
-          '(e.g. a crumpled wrapper, a scrap of paper, a tissue, an empty can). '
+          '(e.g. a crumpled wrapper, a scrap of paper, a tissue, an empty can, a bottle cap, or food such as a piece '
+          'of fruit, a peel, a core or scraps, or anything else small that looks like it was dropped and should be thrown away). '
           'Ignore anything large, anything on furniture, and the rug, floor, shadows and patterns. Include partially visible litter. '
           'Box the WHOLE object, not its printed logo. Answer with only a JSON list of boxes [[x1,y1,x2,y2],...] '
           'in integer coordinates normalized to 0-1000, or [] if there is none.')
