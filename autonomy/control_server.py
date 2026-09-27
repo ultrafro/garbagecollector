@@ -1800,8 +1800,9 @@ def parse_args():
     parser.add_argument("--grab-scan-timeout", type=float, default=60., help="Seconds allowed to scan and approach")
     parser.add_argument("--grab-hold-time", type=float, default=.25,
                         help="Seconds to keep still after the gripper has stopped closing, before lifting")
-    parser.add_argument("--vlm-verify-max-age", type=float, default=2.,
-                        help="Seconds a VLM verification stays valid for forward travel")
+    parser.add_argument("--vlm-verify-max-age", type=float, default=3.5,
+                        help="Seconds since the last VLM confirmation during which forward travel is allowed. At 2 s the "
+                             "confirmation cycle (up to ~1.5 s with a trash/keep re-check) kept stopping the approach")
     parser.add_argument("--confidence", type=float, default=.004,
                         help="Candidate threshold; multi-frame confirmation limits low-confidence false positives")
     parser.add_argument("--confirm-frames", type=int, default=3)

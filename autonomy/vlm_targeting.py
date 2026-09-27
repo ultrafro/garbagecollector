@@ -266,7 +266,7 @@ class Settings:
     reject_memory_s: float = 30.     # forget an object's trash/keep votes this long after it was last seen
     reject_match: float = .6         # patch correlation above which a detection "looks like" a remembered object
     votes_kept: int = 5              # trash/keep votes remembered per object; a keep majority means ignore it
-    reclassify_s: float = 3.         # re-ask "can it be picked up?" about a tracked target this often
+    reclassify_s: float = 6.         # re-ask "trash or keep?" about a tracked target this often (each costs a slow round)
     coast_s: float = 1.5             # after the fast tracker loses the view, wait this long for a VLM re-seed
     buffer_frames: int = 90
 
