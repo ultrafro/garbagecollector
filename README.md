@@ -1,83 +1,168 @@
-# RoboPet LeKiwi control panel
+# garbagecollector
 
-This folder contains a local browser UI and a Raspberry Pi WebSocket bridge for the LeKiwi.
+A [LeKiwi](https://github.com/SIGRobotics-UIUC/LeKiwi) mobile robot with an SO-101 arm that finds small trash on the
+floor, picks it up, checks that it really has it, and drops it in a bin it carries. Then it backs up and looks for the
+next piece.
 
-The bridge controls six arm joints (`shoulder_pan`, `shoulder_lift`, `elbow_flex`, `wrist_flex`, `wrist_roll`, `gripper`) and the three-wheel base. Arm sliders command immediately. Base direction buttons command while held and stop on release; the Pi watchdog also stops stale base commands automatically.
+| Pick up and bin (side view) | Autonomous cleanup (top-down, sped up) |
+|---|---|
+| ![Pick up and bin](docs/media/pick-and-bin.gif) | ![Autonomous cleanup](docs/media/autonomous-cleanup.gif) |
+| [full video](docs/media/pick-and-bin.mp4) | [full video](docs/media/autonomous-cleanup.mp4) |
 
-The control page also has an explicit `test grab` button and a configurable grab-width slider (default 95%). It only runs when a confirmed trash target is close: the hub centers it with arm IK, snapshots the measured six-joint pose, then advances along the captured forward approach vector (which points forward and down) until the gripper reaches the ground plane (`--grab-ground-z`, default -0.057 m — the 2.5in pedestal standoff reduced 10%), wrist_flex loads, or the arm runs out of reach. It steers the vector toward the target while it is visible and holds the last vector when it is not; orientation floats so the wrist can tilt to reach. The base is held stopped throughout grab. The dive stops when a 3-sample moving average of the wrist_flex servo load magnitude holds at or above a threshold (default 64), adjustable live from the control page slider (see `autonomy/contact.py`). The average smooths isolated movement-torque spikes; the threshold was calibrated from a real ground-contact dive. That load check is the only thing that ends the dive early; lag, joint tracking error, an exhausted ray and the travel limit all simply end the dive where it is and close the gripper rather than abandoning the grab. Then the gripper fully closes (`--grab-gripper`), the arm lifts, and it returns to the saved home pose holding the grip closed. The hub checks that the target moves with the wrist; if it does not, it retracts and retries the grip once before returning home. The Pi reports optional STS3215 `present_load`/`present_current` telemetry; when firmware does not return those registers, image motion and position error are used for verification.
+Trash is recognised by a local vision-language model (Qwen3-VL-4B running in llama.cpp), not a trained detector, so it
+picks up wrappers, paper, peels and fruit without a custom dataset.
 
-The same WebSocket carries JSON motor telemetry and binary MJPEG camera frames from `/dev/video0`.
+> This drives a real robot with an arm. Keep the area clear, keep a hand near **STOP** (or the power switch), and
+> expect to tune it for your build.
 
-The UI can save the current measured arm pose as home and return to it later. The pose is persisted on the Pi at `~/robopet/home_pose.json`.
+## How it fits together
 
-On connection, the six arm sliders initialize from the measured motor positions.
-
-Arm positions are radians, matching the `rustypot` API. The UI and bridge clamp targets to conservative ranges.
-
-## Run the local page
-
-```powershell
-python -m http.server 8080 --directory .\robopet\web
+```
+ ┌──────────────── LeKiwi (Raspberry Pi) ────────────────┐          ┌──────────────────── Computer (GPU) ─────────────────────┐
+ │                                                       │          │                                                         │
+ │  STS3215 servo bus ──┐                                │          │  autonomy/control_server.py   http://<computer>:8080   │
+ │  (arm ids 1-6,       │                                │          │   ├─ web control page (manual drive, arm, settings)    │
+ │   wheels 7-9)        ├─ pi/lekiwi_ws.py ── WebSocket ─┼── :8765 ─┼─  ├─ camera worker + hybrid targeter ────────┐         │
+ │  USB wrist camera ───┘   (systemd: robopet.service)   │          │   ├─ auto loop: search / approach / wander   │  HTTP   │
+ │                                                       │          │   └─ grab: dive, grip, check, bin, retry     ▼         │
+ └───────────────────────────────────────────────────────┘          │  llama-server + Qwen3-VL-4B (GGUF) ─────── :8091       │
+                                                                    └─────────────────────────────────────────────────────────┘
 ```
 
-Open <http://localhost:8080>. The page connects to `ws://raspberrypi.local:8765` by default.
+**Raspberry Pi (on the robot)** runs one small program, `pi/lekiwi_ws.py`. It has no intelligence: it streams the
+camera, reports the motors, and executes motor commands. It
+- talks to the Feetech STS3215 servos through [rustypot](https://github.com/pollen-robotics/rustypot) (arm in position
+  mode, wheels in speed mode) and publishes joint positions, loads and currents about 5 times a second;
+- streams the USB wrist camera as MJPEG (via ffmpeg, 640x360) and applies exposure settings sent by the computer;
+- stops the wheels if no command arrives for 0.7 s (watchdog);
+- stores the arm's home pose in `~/robopet/home_pose.json`.
 
-## Pi deployment
+**The WebSocket (port 8765)** is the only link between the two. Binary messages are JPEG camera frames; text messages
+are JSON: `state` telemetry from the Pi, and commands from the computer (`joints`, `drive`, `stop`, `home`,
+`camera_settings`, `arm_torque`, ...).
 
-Copy `pi/lekiwi_ws.py` to the Pi alongside the installed LeRobot package and run:
+**The computer** does all the processing and serves the control page:
+- `autonomy/control_server.py` connects to the Pi, serves the browser UI on port 8080, and runs the camera worker, the
+  auto loop and the grab routine.
+- `autonomy/vlm_targeting.py` is the **hybrid targeter**. Qwen3-VL finds candidate trash about twice a second and a
+  fast CSRT tracker follows it between answers (late answers are re-seeded on the frame the model looked at). Each
+  candidate is also asked "trash or keep?" on the full frame, with per-object votes remembered by appearance, so boxes,
+  sealed bags and labels are ignored.
+- `autonomy/wrist_ik.py` does inverse kinematics for the SO-101 arm from its URDF (`web/so101/`).
+- **llama.cpp's `llama-server`** runs Qwen3-VL-4B-Instruct (Q4_K_M) on the GPU; about 0.3-0.5 s per question on a laptop
+  RTX 4070.
+
+### What auto mode does
+
+1. **Search**: turn in place until the targeter locks onto trash. After a full turn with nothing found, turn to a random
+   heading and drive 30-80 cm (the VLM is asked whether the path ahead is clear first and during the drive), then search again.
+2. **Approach**: drive in while steering and pitching the wrist to keep the target centred; forward travel only while
+   the target is recently confirmed and fully in view.
+3. **Grab**: dive the gripper along the camera ray with visual servoing, settle at the bottom, close fully.
+4. **Grasp check**: lift ~12 cm; it's held if the jaws didn't fully close, or if the VLM sees something held.
+   On a miss: open, back up, re-approach and retry (3 attempts, then back off and scan elsewhere).
+5. **Bin**: replay the taught placement keypoints into the bin, back up 25 cm, and resume searching.
+
+## Hardware
+
+- **LeKiwi** mobile base with an **SO-101** arm, a Raspberry Pi, and the wrist camera. Build and wire it following the
+  [LeKiwi](https://github.com/SIGRobotics-UIUC/LeKiwi) instructions, and set up and calibrate the motors with
+  [LeRobot](https://github.com/huggingface/lerobot) ([LeKiwi guide](https://huggingface.co/docs/lerobot/lekiwi)).
+  This project expects the LeKiwi motor ids (arm 1-6, wheels 7-9) on `/dev/ttyACM0`.
+- A **bin** mounted on the robot within the arm's reach.
+- A **computer with a GPU** on the same network (developed on Windows 11 with an RTX 4070 Laptop, 8 GB; any GPU that
+  llama.cpp supports should work).
+
+## Setup
+
+### 1. Raspberry Pi
 
 ```bash
-python3 lekiwi_ws.py --host 0.0.0.0 --port 8765
+# on the Pi (Raspberry Pi OS), in ~/robopet
+git clone https://github.com/ultrafro/garbagecollector.git ~/robopet
+pip install --user websockets numpy rustypot
+sudo apt install ffmpeg v4l-utils
+python3 ~/robopet/pi/lekiwi_ws.py --host 0.0.0.0 --port 8765     # try it by hand first
 ```
 
-The Pi needs Python packages `websockets`, `numpy`, and `rustypot`. Set `LEKIWI_PORT` if the motor bus is not `/dev/ttyACM0`.
+To start it on boot, install the systemd unit (edit the user and paths in it if yours differ):
 
-For a local page, run `.\run-local.ps1` from PowerShell and open `http://localhost:8080`.
+```bash
+sudo cp ~/robopet/pi/robopet.service /etc/systemd/system/
+sudo systemctl enable --now robopet
+```
 
-This is a test console for a real robot. Keep the arm clear, start with low speed, and have a physical power disconnect available.
+`deploy-pi.sh user@<pi-address>` copies an updated `lekiwi_ws.py` to the Pi and restarts it. Note that restarting the
+bridge turns the arm's torque off for a moment, so support the arm.
 
-## Computer-side trash homing
+### 2. Computer
 
-The autonomy loop runs on the controlling computer; the Pi remains a camera and
-motor WebSocket bridge. First use the web console to save a safe home pose. Then,
-on the computer:
+```bash
+git clone https://github.com/ultrafro/garbagecollector.git && cd garbagecollector
+python -m venv .venv && .venv/Scripts/activate            # Linux/macOS: source .venv/bin/activate
+pip install -r requirements-server.txt
+```
+
+Install [llama.cpp](https://github.com/ggml-org/llama.cpp) (on Windows: `winget install ggml.llamacpp`) and download
+the model:
+
+```bash
+huggingface-cli download Qwen/Qwen3-VL-4B-Instruct-GGUF Qwen3VL-4B-Instruct-Q4_K_M.gguf mmproj-Qwen3VL-4B-Instruct-F16.gguf
+```
+
+### 3. Run
+
+Windows (starts llama-server if needed, then the control server):
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\pip install -r requirements-server.txt
-.\run-local.ps1
+.\run-local.ps1 -Vlm -Pi ws://<pi-address>:8765
 ```
 
-Open <http://localhost:8080>. The computer-side hub runs YOLO continuously, so
-annotated boxes remain visible during manual driving. Use the joystick for
-forward/strafe, hold the rotation buttons to turn, and use the sliders for the
-arm. `Start auto mode` transfers base and arm ownership to trash homing. Its
-rolling decision trace reports target confidence, centering and distance errors,
-exact motion commands, and the reason for every behavior.
+Anywhere else:
 
-The default YOLO-World model is downloaded on first use and uses open-vocabulary
-prompts for wrappers, discarded packaging, litter, bottles, cups, cans, bags,
-and food containers. Low-confidence candidates must overlap for three
-successive frames before they become motion targets. Override the vocabulary with
-`--labels ...`; a custom trash-trained checkpoint remains the best production
-option once representative camera images have been collected.
+```bash
+llama-server -m Qwen3VL-4B-Instruct-Q4_K_M.gguf --mmproj mmproj-Qwen3VL-4B-Instruct-F16.gguf -ngl 99 -c 4096 --port 8091
+python -m autonomy.control_server --pi ws://<pi-address>:8765 --targeter vlm
+```
 
-Candidates covering more than 35% of the image are rejected by default so rugs,
-floors, and other giant background regions cannot become targets. Tune this with
-`--max-target-area` if necessary. Candidates clipped against the frame edge are
-also rejected because they cannot be centered reliably.
+Open `http://localhost:8080`.
 
-The largest qualifying bounding box is selected as the closest object. The robot
-turns until it is horizontally centered, then approaches until the box is 50% of
-the image height (`--stop-height`). The wrist tracks vertical error relative to
-the saved home pose. If frames/targets are lost, forward motion stops and the base
-slowly scans. This LeKiwi uses an inverted image-to-base turn convention by
-default; use `--turn-sign 1` only if another build rotates oppositely. Use
-`--drive-sign 1` only if physical forward is positive body-x on another build,
-and `--wrist-sign -1` if its vertical axis is reversed. The default scan rate is 8 degrees/s because lower rotation commands
-can fall inside the wheel-servo deadband; tune it with `--patrol-speed`. Stop the
-autonomy process before using manual controls.
+### 4. Teach it your robot
 
-Performance defaults are a 0.004 confidence floor with three-frame confirmation,
-0.11 m/s maximum approach speed, 12 degrees/s maximum turning, and a 12 Hz
-control loop. Keep a clear path and physical power cutoff available.
+On the control page:
+- **Home pose**: move the arm so the camera looks ahead and slightly down at the floor, then
+  **Set current pose as home**.
+- **Bin placement**: **Release arm for teaching**, move the arm by hand, and **Capture keypoint** for `lift`, `over`,
+  `in`, `release`, `out` and `reset` (the carry from the grasp into your bin and back). They are saved to
+  `recordings/placement-keypoints.json`; the ones in this repo are for the author's robot and bin.
+- Then press **Start auto mode**.
+
+## Tuning and logs
+
+Most behaviour is a command-line flag on `autonomy.control_server` (`--help` lists them all). Useful ones:
+`--grab-attempts`, `--place-backup`, `--wander-after-deg`, `--vlm-verify-max-age`, `--wrist-feedforward`,
+`--camera-backlight` (auto-exposure brightness target), `--no-auto-grab` (approach only).
+
+While it runs it writes:
+- `recordings/auto-log/auto-YYYYMMDD.csv`: every auto-mode control tick (target error, commands, wrist angles);
+- `screenshots/grab-dive-*.csv`: every dive step, including where the target sat in the image;
+- `recordings/grasp-checks/<time>/`: the image and votes of every grasp check, for labelling;
+- the server's log output (stderr): every targeter, auto-mode and grab decision.
+
+`scripts/` has tools used during development: recording a grab with all telemetry (`record_grab.py`), rendering and
+comparing grab videos, replaying recordings through the targeter, and evaluating VLM prompts on saved frames.
+
+## Tests
+
+```bash
+pip install pytest
+python -m pytest tests
+```
+
+Some older grab/contact-detection tests (`tests/test_contact.py`, one in `tests/test_wrist_ik.py`) predate the current
+grab routine and currently fail.
+
+## License
+
+MIT (see [LICENSE](LICENSE)). Third-party files and models keep their own licenses; see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
